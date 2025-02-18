@@ -1,6 +1,6 @@
 const axios = require('axios');
 
-const domain = 'dwentz.gaia.domains' // change your domain if you have domain & joined nodes
+const domain = 'indonesia.gaia.domains' // change your domain if you have domain & joined nodes
 const url = `https://${domain}/v1/chat/completions`;
 
 const initialPrompt = 'give me random question chat to AI Agent, context: crypto & blockchain'
