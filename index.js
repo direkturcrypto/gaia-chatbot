@@ -4,159 +4,154 @@ const { getWallet } = require('./generate-register');
 const domain = 'indonesia.gaia.domains'
 const url = `https://${domain}/v1/chat/completions`;
 
-const initialPrompt = 'give me random question chat to AI Agent, context: crypto & blockchain'
+const initialPrompt = 'You are having a conversation about blockchain and cryptocurrency. Start with an interesting question or observation.'
 
-// Function to handle regular API responses (non-streaming)
-function fetchChatResponse(apiKey, prompt, retries = 20) {
+const MAX_CONVERSATIONS = 30;
+
+async function fetchChatResponse(apiKey, prompt, role = 'assistant', conversationHistory = [], retryCount = 0) {
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY = 5000; // 5 seconds delay between retries
+
     return new Promise(async (resolve, reject) => {
-        for (let attempt = 1; attempt <= retries; attempt++) {
-            try {
-                const data = {
-                    messages: [
-                        { role: 'system', content: 'You are a helpful assistant. reply minimum 700 characters' },
-                        { role: 'user', content: prompt }
-                    ]
-                };
+        try {
+            const messages = [
+                { 
+                    role: 'system', 
+                    content: role === 'human' ? 
+                        'You are a curious human discussing blockchain and crypto. Express thoughts naturally, show emotions, and sometimes be skeptical. Use English.' :
+                        'You are a knowledgeable AI assistant discussing blockchain and crypto. Use <thinking>your analysis</thinking> format before responding.' 
+                },
+                ...conversationHistory,
+                { role: 'user', content: prompt }
+            ];
 
-                const response = await axios.post(url, data, {
-                    headers: {
-                        'Authorization': `Bearer ${apiKey}`,
-                        'Accept': 'application/json',
-                        'Content-Type': 'application/json'
-                    },
-                    timeout: 600000
-                });
+            const data = {
+                messages,
+                stream: false // Explicitly set to false
+            };
 
-                if (response.status === 200) {
-                    try {
-                        const reply = response.data.choices[0].message;
-                        const usage = response.data.usage;
-                        
-                        // Only log the usage information
-                        console.log(`✨ Assistant usage: ${usage.total_tokens} tokens`);
-                        
-                        return resolve(reply.content || "");
-                    } catch (e) {
-                        console.error(`Response parsing failed: ${e.message}`);
-                        if (attempt === retries) {
-                            return resolve("");
-                        }
-                    }
-                } else if (response.status == 402) {
-                    console.error('Insufficient gaiaCredits Balance');
+            // Simulate thinking process
+            if (role === 'assistant') {
+                const thinking = await generateThinking(prompt);
+                console.log(`🤔 ${role} thinking: ${thinking}`);
+            }
+
+            const response = await axios.post(url, data, {
+                headers: {
+                    'Authorization': `Bearer ${apiKey}`,
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json'
+                },
+                timeout: 60000
+            });
+
+            if (response.status === 200 && response.data) {
+                if (response.data.choices && response.data.choices.length > 0) {
+                    const reply = response.data.choices[0].message;
+                    const usage = response.data.usage || { total_tokens: 'unknown' };
+                    
+                    const emoji = role === 'human' ? '🥸' : '✨';
+                    console.log(`${emoji} ${role.charAt(0).toUpperCase() + role.slice(1)} usage: ${usage.total_tokens} tokens`);
+                    
+                    return resolve(reply.content || "");
+                } else {
+                    console.error('Unexpected response structure');
                     return resolve("");
                 }
-            } catch (error) {
-                console.error(`Attempt ${attempt} failed: ${error.message}`);
-                if (attempt === retries) {
-                    return resolve("");
+            } else if (response.status === 402) {
+                console.error('Insufficient gaiaCredits Balance');
+                return resolve("");
+            } else {
+                console.error('Unexpected response status:', response.status);
+                if (retryCount < MAX_RETRIES) {
+                    console.log(`Retrying... (${retryCount + 1}/${MAX_RETRIES})`);
+                    await new Promise(r => setTimeout(r, RETRY_DELAY));
+                    return resolve(fetchChatResponse(apiKey, prompt, role, conversationHistory, retryCount + 1));
                 }
+                return resolve("");
+            }
+        } catch (error) {
+            console.error('Request error:', error.message);
+            
+            // Check if it's a 402 status code (insufficient credits)
+            if (error.response?.status === 402) {
+                console.error('Insufficient gaiaCredits Balance');
+                return resolve("");
+            }
+
+            // Retry for other errors
+            if (retryCount < MAX_RETRIES) {
+                console.log(`Retrying... (${retryCount + 1}/${MAX_RETRIES})`);
+                await new Promise(r => setTimeout(r, RETRY_DELAY));
+                return resolve(fetchChatResponse(apiKey, prompt, role, conversationHistory, retryCount + 1));
+            } else {
+                console.error('Max retries reached, giving up');
+                return resolve("");
             }
         }
-        console.error('All retry attempts failed.');
-        return resolve("");
     });
 }
 
-function humanReply(apiKey, prompt, retries = 20) {
-    return new Promise(async (resolve, reject) => {
-        for (let attempt = 1; attempt <= retries; attempt++) {
-            try {
-                const data = {
-                    messages: [
-                        { role: 'system', content: 'You are human, always asking to discuss something. always use english' },
-                        { role: 'user', content: prompt }
-                    ]
-                };
-
-                const response = await axios.post(url, data, {
-                    headers: {
-                        'Authorization': `Bearer ${apiKey}`,
-                        'Accept': 'application/json',
-                        'Content-Type': 'application/json'
-                    },
-                    timeout: 600000
-                });
-
-                if (response.status === 200) {
-                    try {
-                        const reply = response.data.choices[0].message;
-                        const usage = response.data.usage;
-                        
-                        // Only log the usage information
-                        console.log(`🥸 Human usage: ${usage.total_tokens} tokens`);
-                        
-                        return resolve(reply.content || "");
-                    } catch (e) {
-                        console.error(`Response parsing failed: ${e.message}`);
-                        if (attempt === retries) {
-                            return resolve("");
-                        }
-                    }
-                } else if (response.status == 402) {
-                    console.error('Insufficient gaiaCredits Balance');
-                    return resolve("");
-                }
-            } catch (error) {
-                console.error(`Attempt ${attempt} failed: ${error.message}`);
-                if (attempt === retries) {
-                    return resolve("");
-                }
-            }
-        }
-        console.error('All retry attempts failed.');
-        return resolve("");
-    });
+async function generateThinking(prompt) {
+    const thoughts = [
+        'Analyzing context',
+        'Considering perspectives',
+        'Evaluating technical aspects',
+        'Reviewing trends',
+        'Connecting concepts'
+    ];
+    
+    // Simulate thinking delay
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    return thoughts[Math.floor(Math.random() * thoughts.length)];
 }
 
-let maxJumlahChat = 100;
+async function conversation(apiKey, prompt) {
+    let conversationCount = 0;
+    let conversationHistory = [];
+
+    const continueConversation = async (prompt) => {
+        if (conversationCount >= MAX_CONVERSATIONS) {
+            console.log("\n--- Max conversation limit reached, restarting ---");
+            conversationCount = 0;
+            conversationHistory = [];
+            return conversation(apiKey, initialPrompt);
+        }
+
+        // Human AI Turn
+        const humanResponse = await fetchChatResponse(apiKey, prompt, 'human', conversationHistory);
+        if (!humanResponse) {
+            console.log("Empty response from human AI, retrying...");
+            return continueConversation(initialPrompt);
+        }
+        // Don't log the full response
+        conversationHistory.push({ role: 'assistant', content: humanResponse });
+        conversationCount++;
+
+        // Add delay to make it more natural
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        // Assistant AI Turn
+        const assistantResponse = await fetchChatResponse(apiKey, humanResponse, 'assistant', conversationHistory);
+        if (!assistantResponse) {
+            console.log("Empty response from assistant AI, retrying...");
+            return continueConversation(humanResponse);
+        }
+        // Don't log the full response
+        conversationHistory.push({ role: 'assistant', content: assistantResponse });
+        conversationCount++;
+
+        // Add natural pause between conversations
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        
+        // Continue the conversation
+        return continueConversation(assistantResponse);
+    };
+
+    return continueConversation(prompt);
+}
 
 const execute = async () => {
-    let jumlahChat = 0;
-
-    const asking = async (apiKey, prompt) => {
-        // Remove conversation counter log to make output cleaner
-        
-        // Ensure we have a valid prompt
-        const validPrompt = prompt || initialPrompt;
-        
-        try {
-            // Get human reply with improved error handling
-            let getAsk = await humanReply(apiKey, validPrompt);
-            
-            jumlahChat++;
-            
-            // If we got a non-empty response, proceed with assistant response
-            if (getAsk && getAsk.length > 0) {
-                let answer = await fetchChatResponse(apiKey, getAsk);
-                jumlahChat++;
-                
-                // If we have a valid answer, continue the conversation
-                if (answer && answer.length > 0) {
-                    if (jumlahChat < maxJumlahChat) {
-                        // Add a small delay between conversations
-                        await new Promise(resolve => setTimeout(resolve, 5000));
-                        return asking(apiKey, answer);
-                    } else {
-                        console.log("--- Max chat limit reached, restarting ---");
-                        jumlahChat = 0; // Reset counter
-                        return execute();
-                    }
-                } else {
-                    console.log("Empty response from assistant, trying again...");
-                    return asking(apiKey, initialPrompt); // Restart with initial prompt
-                }
-            } else {
-                console.log("Empty response from human, trying again...");
-                return asking(apiKey, initialPrompt); // Restart with initial prompt
-            }
-        } catch (e) {
-            console.error(`Error: ${e.message}`);
-            // Don't stop - just continue with a new conversation
-            return asking(apiKey, initialPrompt);
-        }
-    }
-
     try {
         let key = await getWallet().catch(e => {
             console.error("Error getting wallet:", e.message);
@@ -164,7 +159,8 @@ const execute = async () => {
         });
         
         if (key && key.apiKey) {
-            return asking(key.apiKey);
+            console.log("🤖 Starting AI conversation...");
+            return conversation(key.apiKey, initialPrompt);
         } else {
             console.log("No valid API key, waiting 10 seconds before retrying...");
             await new Promise(resolve => setTimeout(resolve, 10000));
@@ -174,14 +170,13 @@ const execute = async () => {
         console.error("Critical error in execute function:", err.message);
         console.log("Waiting 30 seconds before restarting...");
         await new Promise(resolve => setTimeout(resolve, 30000));
-        return execute(); // Always keep the program running
+        return execute();
     }
 }
 
 // Catch unhandled promise rejections to prevent process crash
 process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Rejection at:', reason);
-    // No need to exit process - let it continue
 });
 
 execute();
