@@ -60,7 +60,8 @@ async function fetchChatResponse(apiKey, prompt, role = 'assistant', conversatio
                 }
             } else if (response.status === 402) {
                 console.error('Insufficient gaiaCredits Balance');
-                return resolve("");
+                // Return a special signal for insufficient credits
+                return resolve({ insufficientCredits: true });
             } else {
                 console.error('Unexpected response status:', response.status);
                 if (retryCount < MAX_RETRIES) {
@@ -76,7 +77,8 @@ async function fetchChatResponse(apiKey, prompt, role = 'assistant', conversatio
             // Check if it's a 402 status code (insufficient credits)
             if (error.response?.status === 402) {
                 console.error('Insufficient gaiaCredits Balance');
-                return resolve("");
+                // Return a special signal for insufficient credits
+                return resolve({ insufficientCredits: true });
             }
 
             // Retry for other errors
@@ -106,9 +108,9 @@ async function generateThinking(prompt) {
     return thoughts[Math.floor(Math.random() * thoughts.length)];
 }
 
-async function conversation(apiKey, prompt) {
-    let conversationCount = 0;
-    let conversationHistory = [];
+async function conversation(apiKey, prompt, existingHistory = [], existingCount = 0) {
+    let conversationCount = existingCount;
+    let conversationHistory = [...existingHistory];
 
     const continueConversation = async (prompt) => {
         if (conversationCount >= MAX_CONVERSATIONS) {
@@ -120,10 +122,19 @@ async function conversation(apiKey, prompt) {
 
         // Human AI Turn
         const humanResponse = await fetchChatResponse(apiKey, prompt, 'human', conversationHistory);
+        
+        // Check for insufficient credits signal
+        if (humanResponse && typeof humanResponse === 'object' && humanResponse.insufficientCredits) {
+            console.log("⚠️ Insufficient credits - Getting new API key while preserving conversation...");
+            // Get a new key and continue with the same history
+            return execute(conversationHistory, conversationCount, prompt);
+        }
+        
         if (!humanResponse) {
             console.log("Empty response from human AI, retrying...");
             return continueConversation(initialPrompt);
         }
+        
         // Don't log the full response
         conversationHistory.push({ role: 'assistant', content: humanResponse });
         conversationCount++;
@@ -133,10 +144,19 @@ async function conversation(apiKey, prompt) {
 
         // Assistant AI Turn
         const assistantResponse = await fetchChatResponse(apiKey, humanResponse, 'assistant', conversationHistory);
+        
+        // Check for insufficient credits signal
+        if (assistantResponse && typeof assistantResponse === 'object' && assistantResponse.insufficientCredits) {
+            console.log("⚠️ Insufficient credits - Getting new API key while preserving conversation...");
+            // Get a new key and continue with the same history and last human response
+            return execute(conversationHistory, conversationCount, humanResponse);
+        }
+        
         if (!assistantResponse) {
             console.log("Empty response from assistant AI, retrying...");
             return continueConversation(humanResponse);
         }
+        
         // Don't log the full response
         conversationHistory.push({ role: 'assistant', content: assistantResponse });
         conversationCount++;
@@ -151,7 +171,7 @@ async function conversation(apiKey, prompt) {
     return continueConversation(prompt);
 }
 
-const execute = async () => {
+const execute = async (previousHistory = [], previousCount = 0, lastPrompt = initialPrompt) => {
     try {
         let key = await getWallet().catch(e => {
             console.error("Error getting wallet:", e.message);
@@ -159,18 +179,22 @@ const execute = async () => {
         });
         
         if (key && key.apiKey) {
-            console.log("🤖 Starting AI conversation...");
-            return conversation(key.apiKey, initialPrompt);
+            if (previousHistory.length > 0) {
+                console.log(`🔄 Continuing conversation with new API key (${previousCount} exchanges so far)...`);
+            } else {
+                console.log("🤖 Starting AI conversation...");
+            }
+            return conversation(key.apiKey, lastPrompt, previousHistory, previousCount);
         } else {
             console.log("No valid API key, waiting 10 seconds before retrying...");
             await new Promise(resolve => setTimeout(resolve, 10000));
-            return execute();
+            return execute(previousHistory, previousCount, lastPrompt);
         }
     } catch (err) {
         console.error("Critical error in execute function:", err.message);
         console.log("Waiting 30 seconds before restarting...");
         await new Promise(resolve => setTimeout(resolve, 30000));
-        return execute();
+        return execute(previousHistory, previousCount, lastPrompt);
     }
 }
 
