@@ -7,27 +7,63 @@ const url = `https://${domain}/v1/chat/completions`;
 const initialPrompt = 'You are having a conversation about blockchain and cryptocurrency. Start with an interesting question or observation.'
 
 const MAX_CONVERSATIONS = 30;
+const MAX_TOTAL_TOKENS = 2000;
+
+// Fungsi untuk menghasilkan random IPv4
+function getRandomIPv4() {
+    return Array(4).fill(0).map(() => Math.floor(Math.random() * 256)).join('.');
+}
+
+function estimateTokens(str) {
+    return Math.ceil((str || '').length / 4);
+}
+
+function getTotalTokens(messages) {
+    return messages.reduce((sum, msg) => sum + estimateTokens(msg.content), 0);
+}
 
 async function fetchChatResponse(apiKey, prompt, role = 'assistant', conversationHistory = [], retryCount = 0) {
     const MAX_RETRIES = 3;
     const RETRY_DELAY = 5000; // 5 seconds delay between retries
 
+    // Batasi conversationHistory hanya 3 pesan terakhir
+    if (conversationHistory.length > 3) {
+        conversationHistory = conversationHistory.slice(-3);
+    }
+
+    // Siapkan pesan sistem
+    const systemMsg = {
+        role: 'system',
+        content: role === 'human'
+            ? 'You are a curious human discussing blockchain and crypto. Express thoughts naturally, show emotions, and sometimes be skeptical. Use English.'
+            : 'You are a knowledgeable AI assistant discussing blockchain and crypto. Use <thinking>your analysis</thinking> format before responding.'
+    };
+
+    // Gabungkan pesan
+    let messages = [
+        systemMsg,
+        ...conversationHistory,
+        { role: 'user', content: prompt }
+    ];
+
+    // Truncate conversationHistory lebih agresif jika total token melebihi batas 2000
+    while (getTotalTokens(messages) > MAX_TOTAL_TOKENS && conversationHistory.length > 0) {
+        conversationHistory.shift(); // Hapus pesan terlama
+        messages = [
+            systemMsg,
+            ...conversationHistory,
+            { role: 'user', content: prompt }
+        ];
+    }
+
     return new Promise(async (resolve, reject) => {
         try {
-            const messages = [
-                { 
-                    role: 'system', 
-                    content: role === 'human' ? 
-                        'You are a curious human discussing blockchain and crypto. Express thoughts naturally, show emotions, and sometimes be skeptical. Use English.' :
-                        'You are a knowledgeable AI assistant discussing blockchain and crypto. Use <thinking>your analysis</thinking> format before responding.' 
-                },
-                ...conversationHistory,
-                { role: 'user', content: prompt }
-            ];
-
             const data = {
                 messages,
-                stream: false // Explicitly set to false
+                stream: true, // Aktifkan streaming
+                stream_options: {
+                    'include_usage': true                    
+                }
             };
 
             // Simulate thinking process
@@ -36,51 +72,85 @@ async function fetchChatResponse(apiKey, prompt, role = 'assistant', conversatio
                 console.log(`🤔 ${role} thinking: ${thinking}`);
             }
 
+            const startTime = Date.now();
             const response = await axios.post(url, data, {
                 headers: {
                     'Authorization': `Bearer ${apiKey}`,
                     'Accept': 'application/json',
-                    'Content-Type': 'application/json'
+                    'Content-Type': 'application/json',
+                    'X-Forwarded-For': getRandomIPv4() // Tambahkan random IP di header
                 },
-                timeout: 60000
+                timeout: 60000,
+                responseType: 'stream'
             });
 
-            if (response.status === 200 && response.data) {
-                if (response.data.choices && response.data.choices.length > 0) {
-                    const reply = response.data.choices[0].message;
-                    const usage = response.data.usage || { total_tokens: 'unknown' };
-                    
-                    const emoji = role === 'human' ? '🥸' : '✨';
-                    console.log(`${emoji} ${role.charAt(0).toUpperCase() + role.slice(1)} usage: ${usage.total_tokens} tokens`);
-                    
-                    return resolve(reply.content || "");
-                } else {
-                    console.error('Unexpected response structure');
-                    return resolve("");
-                }
-            } else if (response.status === 402) {
-                console.error('Insufficient gaiaCredits Balance');
-                // Return a special signal for insufficient credits
-                return resolve({ insufficientCredits: true });
-            } else {
-                console.error('Unexpected response status:', response.status);
-                if (retryCount < MAX_RETRIES) {
-                    console.log(`Retrying... (${retryCount + 1}/${MAX_RETRIES})`);
-                    await new Promise(r => setTimeout(r, RETRY_DELAY));
-                    return resolve(fetchChatResponse(apiKey, prompt, role, conversationHistory, retryCount + 1));
-                }
-                return resolve("");
+            if (response.status === 429) {
+                console.error('Rate limited (429)');
+                return resolve({ rateLimited: true });
             }
+
+            let result = '';
+            let usage = { total_tokens: 'unknown' };
+            let done = false;
+            let output = '';
+
+            response.data.on('data', chunk => {
+                const str = chunk.toString();
+                result += str;
+                // Cek jika stream mengandung [DONE]
+                if (str.includes('[DONE]')) {
+                    done = true;
+                }
+                // Tampilkan isi stream ke console secara real-time (tanpa newline double)
+                const lines = str.split('\n').filter(Boolean);
+                for (const line of lines) {
+                    // Cek jika line adalah data JSON stream
+                    if (line.startsWith('data:')) {
+                        const jsonStr = line.replace('data:', '').trim();
+                        if (jsonStr === '[DONE]') continue;
+                        try {
+                            const json = JSON.parse(jsonStr);
+                            if (json.choices && json.choices[0] && json.choices[0].delta && json.choices[0].delta.content) {
+                                const content = json.choices[0].delta.content;
+                                output += content;
+                            }
+                            if (json.usage) {
+                                usage = json.usage;
+                            }
+                        } catch (e) { /* abaikan */ }
+                    }
+                }
+            });
+            response.data.on('end', () => {
+                const endTime = Date.now();
+                const elapsed = endTime - startTime;
+                // Hitung token manual jika usage null
+                let totalTokens = usage.total_tokens;
+                if (!totalTokens || totalTokens === 'unknown' || totalTokens === null) {
+                    totalTokens = Math.ceil(output.length / 4);
+                }
+                const emoji = role === 'human' ? '🥸' : '✨';
+                const roleLabel = role.charAt(0).toUpperCase() + role.slice(1);
+                console.log(`\n${emoji} ${roleLabel} usage: ${totalTokens} tokens, ${elapsed}ms`);
+                return resolve(output);
+            });
+            response.data.on('error', err => {
+                console.error('Stream error:', err.message);
+                return resolve("");
+            });
         } catch (error) {
             console.error('Request error:', error.message);
-            
+            // Check if it's a 429 status code (rate limit)
+            if (error.response?.status === 429) {
+                console.error('Rate limited (429)');
+                return resolve({ rateLimited: true });
+            }
             // Check if it's a 402 status code (insufficient credits)
             if (error.response?.status === 402) {
                 console.error('Insufficient gaiaCredits Balance');
                 // Return a special signal for insufficient credits
                 return resolve({ insufficientCredits: true });
             }
-
             // Retry for other errors
             if (retryCount < MAX_RETRIES) {
                 console.log(`Retrying... (${retryCount + 1}/${MAX_RETRIES})`);
@@ -198,9 +268,40 @@ const execute = async (previousHistory = [], previousCount = 0, lastPrompt = ini
     }
 }
 
+// Fungsi untuk menjalankan 10 execute() paralel dan pause 5 menit jika ada rate limit
+async function runParallelExecutions(parallelCount = 20) {
+    let shouldPause = false;
+    let pausePromise = null;
+
+    async function wrappedExecute(...args) {
+        while (shouldPause) {
+            await pausePromise;
+        }
+        const result = await execute(...args);
+        // Cek jika ada rate limit
+        if (result && typeof result === 'object' && result.rateLimited) {
+            if (!shouldPause) {
+                shouldPause = true;
+                console.log('⏸️ Rate limited! Pausing all executions for 5 minutes...');
+                pausePromise = new Promise(res => setTimeout(() => {
+                    shouldPause = false;
+                    pausePromise = null;
+                    res();
+                }, 5 * 60 * 1000)); // 5 menit
+            }
+            await pausePromise;
+        }
+        return result;
+    }
+
+    await Promise.all(
+        Array(parallelCount).fill(0).map(() => wrappedExecute())
+    );
+}
+
 // Catch unhandled promise rejections to prevent process crash
 process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Rejection at:', reason);
 });
 
-execute();
+runParallelExecutions(10);

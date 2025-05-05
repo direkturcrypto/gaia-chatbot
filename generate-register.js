@@ -13,31 +13,36 @@ async function signMessage(wallet) {
   return { signature, message };
 }
 
+// Fungsi untuk menghasilkan random IPv4
+function getRandomIPv4() {
+    return Array(4).fill(0).map(() => Math.floor(Math.random() * 256)).join('.');
+}
+
 async function login(wallet) {
   const { signature, message } = await signMessage(wallet);
   const response = await axios.post(`${apiUrl}/connect-wallet/`, { signature, message }, {
-    headers: { 'Content-Type': 'application/json' }
+    headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': getRandomIPv4() }
   });
   return response.data.data.access_token;
 }
 
 async function listApiKeys(token) {
   const response = await axios.get(`${apiUrl}/apikey/list/`, {
-    headers: { 'Authorization': token }
+    headers: { 'Authorization': token, 'X-Forwarded-For': getRandomIPv4() }
   });
   return response.data.data.objects;
 }
 
 async function removeApiKey(token, id) {
   const response = await axios.post(`${apiUrl}/apikey/delete/`, { id }, {
-    headers: { 'Authorization': token, 'Content-Type': 'application/json' }
+    headers: { 'Authorization': token, 'Content-Type': 'application/json', 'X-Forwarded-For': getRandomIPv4() }
   });
   return response.data.message;
 }
 
 async function overview(token) {
   const response = await axios.get(`${apiUrl}/apikey/list/`, {
-    headers: { 'Authorization': token }
+    headers: { 'Authorization': token, 'X-Forwarded-For': getRandomIPv4() }
   }).catch((e) => ({status: 500, data: null}));
 
   return response.data?response.data.data:null;
@@ -45,7 +50,7 @@ async function overview(token) {
 
 async function createApiKey(token) {
   const response = await axios.post(`${apiUrl}/apikey/create/`, { name: 'key1' }, {
-    headers: { 'Authorization': token, 'Content-Type': 'application/json' }
+    headers: { 'Authorization': token, 'Content-Type': 'application/json', 'X-Forwarded-For': getRandomIPv4() }
   });
   return response.data.data.api_key;
 }
